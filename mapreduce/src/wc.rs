@@ -1,7 +1,7 @@
 //
 // a word-count application "plugin" for MapReduce.
 //
-use crate::{Map, Reduce, KeyValue};
+use crate::{KeyValue, Map, Reduce};
 
 pub struct Wc;
 
@@ -24,7 +24,7 @@ impl Map for Wc {
             }
             let kv = KeyValue {
                 key: word,
-                value: "1"
+                value: "1",
             };
             kva.push(kv);
         }
