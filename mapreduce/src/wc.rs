@@ -13,7 +13,7 @@ impl Map for Wc {
     /// and look only at the contents argument. The return value is a slice
     /// of key/value pairs.
     ///
-    fn map<'a>(&self, filename: &'a str, contents: &'a str) -> Vec<KeyValue<'a>> {
+    fn map<'a>(&self, filename: &'a str, contents: &'a str) -> Vec<KeyValue> {
         let words = contents.split(|c: char| !c.is_alphanumeric());
 
         let mut kva: Vec<KeyValue> = Vec::new();
@@ -23,8 +23,8 @@ impl Map for Wc {
                 continue;
             }
             let kv = KeyValue {
-                key: word,
-                value: "1",
+                key: word.to_string(),
+                value: "1".to_string(),
             };
             kva.push(kv);
         }

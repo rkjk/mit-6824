@@ -1,25 +1,26 @@
 pub mod wc;
+pub mod mrsequential;
 
-#[derive(Debug)]
-pub struct KeyValue<'a> {
-    key: &'a str,
-    value: &'a str,
+#[derive(Debug, Clone)]
+pub struct KeyValue {
+    key: String,
+    value: String,
 }
 
-impl<'a> PartialEq for KeyValue<'a> {
+impl PartialEq for KeyValue {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.value == other.value
     }
 }
 
-impl<'a> Eq for KeyValue<'a> {}
+impl Eq for KeyValue {}
 
 pub trait Map {
     /// Map part of Mapreduce
     ///
     /// filename is the filename that we have to consume
     /// contents -> contents of the file from which we have to generate key-value pairs
-    fn map<'a>(&self, filename: &'a str, contents: &'a str) -> Vec<KeyValue<'a>>;
+    fn map<'a>(&self, filename: &'a str, contents: &'a str) -> Vec<KeyValue>;
 }
 
 pub trait Reduce {
@@ -69,5 +70,18 @@ mod tests {
 
         let word_counter: Wc = Wc {};
         assert_eq!("3", word_counter.reduce("test", vec!["1", "2", "3"]));
+    }
+
+    #[test]
+    fn wc_mapreduce_test() {
+        use crate::{wc::Wc, mrsequential::MapReduceSeq};
+
+        let word_counter: Wc = Wc {};
+
+        let mapreduceseq = MapReduceSeq {
+            mapreducef: word_counter,
+        };
+        let files = vec!["./data/smalltest.txt"];
+        mapreduceseq.run(files);
     }
 }
