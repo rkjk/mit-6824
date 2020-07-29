@@ -1,7 +1,7 @@
-pub mod wc;
 pub mod mrsequential;
+pub mod wc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Ord, PartialOrd)]
 pub struct KeyValue {
     key: String,
     value: String,
@@ -15,15 +15,13 @@ impl PartialEq for KeyValue {
 
 impl Eq for KeyValue {}
 
-pub trait Map {
+pub trait MapReduce {
     /// Map part of Mapreduce
     ///
     /// filename is the filename that we have to consume
     /// contents -> contents of the file from which we have to generate key-value pairs
     fn map<'a>(&self, filename: &'a str, contents: &'a str) -> Vec<KeyValue>;
-}
 
-pub trait Reduce {
     /// Reduce part of Mapreduce
     ///
     /// key is the key that this instance of reduce is tasked with
@@ -35,7 +33,7 @@ pub trait Reduce {
 mod tests {
     #[test]
     fn wc_map_test() {
-        use crate::{wc::Wc, KeyValue, Map};
+        use crate::{wc::Wc, KeyValue, MapReduce};
         use std::fs;
         let word_counter: Wc = Wc {};
         let filename = "./data/smalltest.txt";
@@ -44,20 +42,20 @@ mod tests {
         assert_eq!(
             vec![
                 KeyValue {
-                    key: "This",
-                    value: "1"
+                    key: String::from("This"),
+                    value: String::from("1")
                 },
                 KeyValue {
-                    key: "is",
-                    value: "1"
+                    key: String::from("is"),
+                    value: String::from("1")
                 },
                 KeyValue {
-                    key: "a",
-                    value: "1"
+                    key: String::from("a"),
+                    value: String::from("1")
                 },
                 KeyValue {
-                    key: "test",
-                    value: "1"
+                    key: String::from("test"),
+                    value: String::from("1")
                 }
             ],
             map_output
@@ -66,7 +64,7 @@ mod tests {
 
     #[test]
     fn wc_reduce_test() {
-        use crate::{wc::Wc, Reduce};
+        use crate::{wc::Wc, MapReduce};
 
         let word_counter: Wc = Wc {};
         assert_eq!("3", word_counter.reduce("test", vec!["1", "2", "3"]));
@@ -74,14 +72,30 @@ mod tests {
 
     #[test]
     fn wc_mapreduce_test() {
-        use crate::{wc::Wc, mrsequential::MapReduceSeq};
+        use crate::{mrsequential::MapReduceSeq, wc::Wc};
+        use std::time::Instant;
 
         let word_counter: Wc = Wc {};
 
         let mapreduceseq = MapReduceSeq {
-            mapreducef: word_counter,
+            mapreducef: Box::new(word_counter),
         };
-        let files = vec!["./data/smalltest.txt"];
+        //let files = vec!["./data/smalltest.txt"];
+        let files = vec![
+            "./data/pg-being_ernest.txt",
+            "./data/pg-dorian_gray.txt",
+            "./data/pg-frankenstein.txt",
+            "./data/pg-grimm.txt",
+            "./data/pg-huckleberry_finn.txt",
+            "./data/pg-metamorphosis.txt",
+            "./data/pg-sherlock_holmes.txt",
+            "./data/pg-tom_sawyer.txt",
+        ];
+        let now = Instant::now();
         mapreduceseq.run(files);
+        println!(
+            "Sequential Mapreduce in {} milliseconds",
+            now.elapsed().as_millis()
+        );
     }
 }
