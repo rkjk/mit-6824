@@ -1,5 +1,12 @@
-mod rpc;
+use std::thread;
+
+mod master;
+mod worker;
 
 fn main() {
-    rpc::rpc_test();
+    let master = thread::spawn(|| {
+        master::start_server();
+    });
+    worker::send_request();
+    master.join().unwrap();
 }
