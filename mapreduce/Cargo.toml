@@ -7,3 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+jsonrpc-http-server = "14.2.0"
+jsonrpc-core = "14.2.0"
+jsonrpc-derive = "14.2.0"
+jsonrpc-core-client = "14.2.0"

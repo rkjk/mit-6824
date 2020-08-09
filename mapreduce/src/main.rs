@@ -1,4 +1,5 @@
+mod rpc;
 
 fn main() {
-    println!("Hello, world!");
+    rpc::rpc_test();
 }
