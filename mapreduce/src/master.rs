@@ -12,6 +12,8 @@ pub trait Rpc {
     fn return_file(&self) -> Result<String>;
 }
 
+/// Use a Read-Write Lock for thread-safe Interior Mutability
+/// The RpcImpl trait does not allow for &mut.
 pub struct RpcImpl {
     files: RwLock<Vec<String>>,
 }
@@ -35,6 +37,7 @@ impl RpcImpl {
 }
 
 impl Rpc for RpcImpl {
+    /// RPC handler function that will return tasks to the worker
     fn return_file(&self) -> Result<String> {
         {
             let files = self.files.read().unwrap();
@@ -56,6 +59,7 @@ impl Rpc for RpcImpl {
     }
 }
 
+/// Start Master -> Returns a Handle to the server to main which will control the server's exit
 pub fn start_server() -> CloseHandle {
     let rpc_impl = RpcImpl::new();
     let mut io = jsonrpc_core::IoHandler::new();
