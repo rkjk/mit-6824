@@ -3,6 +3,7 @@ use jsonrpc_core::Result;
 use jsonrpc_derive::rpc;
 use jsonrpc_http_server::{CloseHandle, ServerBuilder};
 use std::sync::RwLock;
+use std::thread;
 
 #[rpc]
 pub trait Rpc {
@@ -13,7 +14,6 @@ pub trait Rpc {
 
 pub struct RpcImpl {
     files: RwLock<Vec<String>>,
-    //close_server: Option<CloseHandle>,
 }
 
 impl RpcImpl {
@@ -30,7 +30,6 @@ impl RpcImpl {
                 "pg-sherlock_holmes.txt".to_string(),
                 "pg-tom_sawyer.txt".to_string(),
             ]),
-            //close_server: None,
         }
     }
 }
@@ -57,7 +56,7 @@ impl Rpc for RpcImpl {
     }
 }
 
-pub fn start_server() {
+pub fn start_server() -> CloseHandle {
     let rpc_impl = RpcImpl::new();
     let mut io = jsonrpc_core::IoHandler::new();
     io.extend_with(rpc_impl.to_delegate());
@@ -66,7 +65,10 @@ pub fn start_server() {
         .threads(1)
         .start_http(&"127.0.0.1:3030".parse().unwrap())
         .unwrap();
-    //let close_handle = server.close_handle();
+    let close_handle = server.close_handle();
 
-    server.wait();
+    thread::spawn(|| {
+        server.wait();
+    });
+    return close_handle;
 }

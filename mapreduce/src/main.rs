@@ -4,9 +4,8 @@ mod master;
 mod worker;
 
 fn main() {
-    let master = thread::spawn(|| {
-        master::start_server();
-    });
+    let master = master::start_server();
     worker::send_request();
-    master.join().unwrap();
+    //master.join().unwrap();
+    master.close();
 }
