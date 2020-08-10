@@ -71,7 +71,7 @@ pub fn start_server() -> CloseHandle {
         .unwrap();
     let close_handle = server.close_handle();
 
-    thread::spawn(|| {
+    thread::spawn(move || {
         server.wait();
     });
     return close_handle;
