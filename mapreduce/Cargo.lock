@@ -619,6 +619,8 @@ dependencies = [
  "jsonrpc-core-client",
  "jsonrpc-derive",
  "jsonrpc-http-server",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
