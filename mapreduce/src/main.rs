@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::{Eq, PartialEq};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
-enum Task {
+pub enum Task {
     Map,
     Reduce,
     Wait,
@@ -15,7 +15,7 @@ enum Task {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Payload {
+pub struct Payload {
     task: Task,
     file: PathBuf,
 }
@@ -28,6 +28,6 @@ fn main() {
     worker::send_request();
 
     // Close master once the workers have finished
-    // This might be different from the original Mapreduce implementation. Check Paper
+    // This is different from the original Mapreduce implementation. Check Paper
     master.close();
 }

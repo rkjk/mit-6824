@@ -14,11 +14,18 @@ pub fn send_request() {
     let transport = HttpTransport::new().standalone().unwrap();
     let transport_handle = transport.handle("http://127.0.0.1:3030").unwrap();
     let mut client = MapReduceClient::new(transport_handle);
+    //let mut count = 100;
     loop {
-        let result: Payload = serde_json::from_str(&client.return_task().call().unwrap()).unwrap();
+        //count -= 1;
+        //if count == 0 {
+        //    break;
+        //}
+        let response = client.return_task().call().unwrap();
+        let result: Payload = serde_json::from_str(&response).unwrap();
         if result.task == Task::Exit {
             break;
         }
         println!("{:?}", result);
+        println!("");
     }
 }
