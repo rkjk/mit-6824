@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::{Payload, Task};
 
-static FAIL_TIME: Duration = Duration::from_millis(100);
+static FAIL_TIME: Duration = Duration::from_millis(5000);
 
 #[rpc]
 pub trait Rpc {
@@ -25,6 +25,7 @@ pub struct Master {
     reducefiles: RwLock<VecDeque<String>>,
     mapdone: RwLock<u32>,
     reducedone: RwLock<u32>,
+    numfiles: u32,
 }
 
 /// Use a Read-Write Lock for thread-safe Interior Mutability
@@ -55,6 +56,7 @@ impl RpcImpl {
                 mapdone: RwLock::new(0),
                 reducedone: RwLock::new(0),
                 reducefiles: RwLock::new(VecDeque::new()),
+                numfiles: 8,
             }),
         }
     }
@@ -68,6 +70,8 @@ impl RpcImpl {
 /// Wait for FAIL_TIME and then check if task is complete.
 /// If Map task is complete, add the task to reduce queue and increase mapdone by 1.
 /// If Reduce task is complete, increase reducedone by 1
+///
+/// TODO: Check if Task is complete
 fn check_task(master: Arc<Master>, task: Task, filename: String) {
     thread::sleep(FAIL_TIME);
     match task {
@@ -94,24 +98,26 @@ impl Rpc for RpcImpl {
     // Check if task is finished
     /// RPC handler function that will return tasks to the worker
     ///
-    /// Logic: mapdone checks that all the Map tasks have been completed. When it reaches 8,
+    /// Logic: mapdone checks that all the Map tasks have been completed. When it reaches numfiles + 1,
     /// master will switch to providing workers with Reduce tasks. If master has to provide a Map task
     /// but mapfiles is empty (meaning all the tasks have been doled out), the master will signal the worker to wait.
     /// If the Master detects an error, then the check_task function will add the task back to the VecDeque in another thread.
     fn return_task(&self) -> Result<String> {
         let mapdone_num = self.master.mapdone.read().unwrap().clone();
         let reducedone_num = self.master.reducedone.read().unwrap().clone();
+
+        let threshold = self.master.numfiles;
         //println!("mapdone_num: {}", mapdone_num);
         //println!("reducedone_num: {}", reducedone_num);
         //println!("Mapfiles {:?}", self.master.mapfiles.read().unwrap());
         //println!("Reducefiles {:?}", self.master.reducefiles.read().unwrap());
-        let task = match mapdone_num {
-            8 => Task::Reduce,
-            _ => Task::Map,
+        let task = match mapdone_num == threshold {
+            true => Task::Reduce,
+            false => Task::Map,
         };
-        println!("task: {:?}", task);
+        //println!("task: {:?}", task);
         {
-            if reducedone_num == 8 {
+            if reducedone_num == threshold {
                 return Ok(self.serialize(&Payload {
                     task: Task::Exit,
                     file: PathBuf::from("/dev/null"),
@@ -124,7 +130,7 @@ impl Rpc for RpcImpl {
             };
             //println!("files: {:?}", files);
             // Start Reduce only after all maps are done
-            if (task == Task::Reduce && mapdone_num != 8)
+            if (task == Task::Reduce && mapdone_num != threshold)
                 || task == Task::Reduce && files.is_empty()
             {
                 return Ok(self.serialize(&Payload {
