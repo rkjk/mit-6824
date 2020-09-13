@@ -1,9 +1,13 @@
+#[macro_use]
+use jsonrpc_client_core::{jsonrpc_client, expand_params};
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+use jsonrpc_client_http::HttpTransport;
 use jsonrpc_core::types::error;
 use jsonrpc_core::Result;
 use jsonrpc_derive::rpc;
 use jsonrpc_http_server::{CloseHandle, Server, ServerBuilder};
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -12,6 +16,13 @@ enum State {
     Follower,
     Candidate,
     Leader,
+}
+
+type Payload = u64;
+
+enum RpcType {
+    RequestVote,
+    AppendEntries,
 }
 
 type LogType = (u64, u64);
@@ -27,8 +38,17 @@ struct Node {
 pub trait Rpc {
     /// Pop File name if available and return else signal slave to exit
     #[rpc(name = "request_vote")]
-    fn request_vote(&self) -> Result<String>;
+    fn request_vote(&self, payload: Payload) -> Result<String>;
+
+    #[rpc(name = "append_entries")]
+    fn append_entries(&self, payload: Payload) -> Result<String>;
 }
+
+jsonrpc_client!(pub struct RpcClient {
+    pub fn request_vote(&mut self, payload: Payload) -> RpcRequest<String>;
+
+    pub fn append_entries(&mut self, payload: Payload) -> RpcRequest<String>;
+});
 
 impl Node {
     fn new() -> Self {
@@ -47,6 +67,21 @@ impl Node {
         println!("Increase term to {}", self.currentTerm);
         println!("Issue parallel RequestVote RPCs");
     }
+
+    /*
+    fn send_rpc(destination: String, rpc_type: RpcType, data: Payload) -> Result<String> {
+        let transport = HttpTransport::new().standalone()?;
+        let transport_handle = transport.handle(destination)?;
+        let mut client = RpcClient::new(transport_handle);
+        let response = match rpc_type {
+            RpcType::RequestVote => client.request_vote(data).call()?,
+            RpcType::AppendEntries => client.append_entries(data).call()?,
+        };
+
+        let result: Payload = serde_json::from_str(&response).unwrap();
+        println!("{:?}", result);
+    }
+    */
 }
 
 struct NodeRpc {
@@ -75,8 +110,11 @@ impl NodeRpc {
 
 impl Rpc for NodeRpc {
     /// RequestVote Rpcs are handled here
-    fn request_vote(&self) -> Result<String> {
-        println!("Node {}: Got RequestVote Rpc", self.id);
+    fn request_vote(&self, payload: Payload) -> Result<String> {
+        println!(
+            "Node {}: Got RequestVote Rpc with payload {:?}",
+            self.id, payload
+        );
         match self.tx_election_timer.send(true) {
             Ok(_) => {
                 println!("Reset Election timer");
@@ -93,6 +131,14 @@ impl Rpc for NodeRpc {
             }
         }
         Ok("Got Vote".to_string())
+    }
+
+    fn append_entries(&self, payload: Payload) -> Result<String> {
+        println!(
+            "Node {}: Got AppendEntries Rpc with payload {:?}",
+            self.id, payload
+        );
+        Ok("Got data".to_string())
     }
 }
 
