@@ -8,6 +8,7 @@ use jsonrpc_derive::rpc;
 use jsonrpc_http_server::{CloseHandle, Server, ServerBuilder};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -91,14 +92,17 @@ struct NodeRpc {
 }
 
 impl NodeRpc {
-    fn new(id: u64) -> NodeRpc {
+    fn new(args: Vec<String>) -> NodeRpc {
+        if args.len() <= 1 {
+            panic!("Node ID not supplied");
+        }
         // Create channel for communication between main thread and election timer thread.
         // Move rx to the election timer thread and tx to the NodeRpc Object
         let (tx, rx) = unbounded();
         let node_rpc = NodeRpc {
             node: Arc::new(RwLock::new(Node::new())),
             tx_election_timer: tx,
-            id: id,
+            id: args[1].parse::<u64>().unwrap(),
         };
 
         let node_clone = Arc::clone(&node_rpc.node);
@@ -171,7 +175,8 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
 }
 
 fn main() {
-    let mut node_rpc = NodeRpc::new(0);
+    let args: Vec<String> = env::args().collect();
+    let mut node_rpc = NodeRpc::new(args);
 
     let mut io = jsonrpc_core::IoHandler::new();
     io.extend_with(node_rpc.to_delegate());
@@ -191,7 +196,7 @@ mod tests {
     #[test]
     pub fn test_election_timeout() {
         let (tx, rx) = unbounded();
-        let mut node_rpc = NodeRpc::new(0);
+        let mut node_rpc = NodeRpc::new(vec!["binary".to_string(), "1".to_string()]);
         let mut node_clone = Arc::clone(&node_rpc.node);
 
         std::thread::spawn(move || {
