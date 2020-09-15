@@ -105,6 +105,7 @@ struct NodeRpc {
 
 impl NodeRpc {
     fn new(args: Vec<String>) -> NodeRpc {
+        println!("{:?}", args);
         if args.len() <= 1 {
             panic!("Node ID not supplied");
         }
@@ -201,13 +202,15 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let port = &args[3];
+    let address = "127.0.0.1:".to_string() + port;
     let mut node_rpc = NodeRpc::new(args);
 
     let mut io = jsonrpc_core::IoHandler::new();
     io.extend_with(node_rpc.to_delegate());
     let server = ServerBuilder::new(io)
         .threads(1)
-        .start_http(&"127.0.0.1:3030".parse().unwrap())
+        .start_http(&address.parse().unwrap())
         .unwrap();
     let close_handle = server.close_handle();
     println!("Node Address: {:?}", server.address());
