@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
+#[derive(Debug)]
 enum State {
     Follower,
     Candidate,
@@ -21,6 +22,14 @@ enum State {
 
 type Payload = u64;
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RequestVotePayload {
+    term: u64,
+    candidate_id: u64,
+    last_log_index: u64,
+    last_log_term: u64,
+}
+
 enum RpcType {
     RequestVote,
     AppendEntries,
@@ -28,6 +37,7 @@ enum RpcType {
 
 type LogType = (u64, u64);
 
+#[derive(Debug)]
 struct Node {
     currentTerm: u64,
     state: State,
@@ -46,7 +56,7 @@ pub trait Rpc {
 }
 
 jsonrpc_client!(pub struct RpcClient {
-    pub fn request_vote(&mut self, payload: Payload) -> RpcRequest<String>;
+    pub fn request_vote(&mut self, payload: RequestVotePayload) -> RpcRequest<String>;
 
     pub fn append_entries(&mut self, payload: Payload) -> RpcRequest<String>;
 });
@@ -70,7 +80,7 @@ impl Node {
     }
 
     /*
-    fn send_rpc(destination: String, rpc_type: RpcType, data: Payload) -> Result<String> {
+    fn send_rpc(destination: String, rpc_type: RpcType, data: RequestVotePayload) -> Result<String> {
         let transport = HttpTransport::new().standalone()?;
         let transport_handle = transport.handle(destination)?;
         let mut client = RpcClient::new(transport_handle);
@@ -85,10 +95,12 @@ impl Node {
     */
 }
 
+#[derive(Debug)]
 struct NodeRpc {
     node: Arc<RwLock<Node>>,
     tx_election_timer: Sender<bool>,
     id: u64,
+    replica_ids: Vec<u64>,
 }
 
 impl NodeRpc {
@@ -96,13 +108,26 @@ impl NodeRpc {
         if args.len() <= 1 {
             panic!("Node ID not supplied");
         }
+
+        if args.len() <= 2 {
+            panic!("Number of replicas not supplied");
+        }
+        let node_id = args[1].parse::<u64>().unwrap();
+        let num_replicas = args[2].parse::<u64>().unwrap();
+        let mut other_node_ids = Vec::new();
+        for i in 0..num_replicas {
+            if i != node_id {
+                other_node_ids.push(i);
+            }
+        }
         // Create channel for communication between main thread and election timer thread.
         // Move rx to the election timer thread and tx to the NodeRpc Object
         let (tx, rx) = unbounded();
         let node_rpc = NodeRpc {
             node: Arc::new(RwLock::new(Node::new())),
             tx_election_timer: tx,
-            id: args[1].parse::<u64>().unwrap(),
+            id: node_id,
+            replica_ids: other_node_ids,
         };
 
         let node_clone = Arc::clone(&node_rpc.node);
@@ -196,7 +221,9 @@ mod tests {
     #[test]
     pub fn test_election_timeout() {
         let (tx, rx) = unbounded();
-        let mut node_rpc = NodeRpc::new(vec!["binary".to_string(), "1".to_string()]);
+        let mut node_rpc =
+            NodeRpc::new(vec!["binary".to_string(), "1".to_string(), "3".to_string()]);
+        println!("Node Wrapper created: {:?}", node_rpc);
         let mut node_clone = Arc::clone(&node_rpc.node);
 
         std::thread::spawn(move || {
