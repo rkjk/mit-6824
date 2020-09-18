@@ -72,12 +72,13 @@ impl Node {
         }
     }
 
-    fn call_election(&mut self) {
+    fn call_election(&mut self, replica_urls: &Vec<String>) {
         println!("Calling election");
         self.state = State::Candidate;
         self.currentTerm += 1;
         println!("Increase term to {}", self.currentTerm);
         println!("Issue parallel RequestVote RPCs");
+        println!("Replicas: {:?}", replica_urls);
     }
 
     /*
@@ -105,12 +106,12 @@ struct NodeRpc {
 }
 
 impl NodeRpc {
-    fn new(node_id: u64, urls: Vec<String>) -> (NodeRpc, String) {
+    fn new(node_id: u64, urls: &Vec<String>) -> (NodeRpc, String, Receiver<bool>) {
         let mut replica_urls = Vec::new();
         let address = urls[node_id as usize].clone();
-        for (i, v) in urls.into_iter().enumerate() {
+        for (i, v) in urls.iter().enumerate() {
             if i != node_id as usize {
-                replica_urls.push(v);
+                replica_urls.push(v.clone());
             }
         }
         // Create channel for communication between main thread and election timer thread.
@@ -123,10 +124,7 @@ impl NodeRpc {
             replica_urls: replica_urls,
         };
 
-        let node_clone = Arc::clone(&node_rpc.node);
-        std::thread::spawn(move || election_timer(rx, node_clone));
-
-        return (node_rpc, address);
+        return (node_rpc, address, rx);
     }
 }
 
@@ -164,13 +162,13 @@ impl Rpc for NodeRpc {
     }
 }
 
-/// Election Timer function. Accepts Receiver's side of an unbounded channel and a Arc to the Node Object.
+/// Election Timer function. Accepts Receiver's side of an unbounded channel
 /// The Timer is reset everytime it receives communication from the main thread. If no communication for a period
 /// of 150-300ms (random), then election is called.
-fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
+fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_urls: Vec<String>) {
     loop {
         let mut rng = rand::thread_rng();
-        let timeout = Duration::from_millis(rng.gen_range(150, 300));
+        let timeout = Duration::from_millis(rng.gen_range(150, 300)); // Should be 150-300 ms
         match rx.recv_timeout(timeout) {
             Ok(_val) => (),
             Err(RecvTimeoutError::Timeout) => {
@@ -179,7 +177,7 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
                 match node_wlock {
                     Ok(_) => {
                         println!("Election Timeout thread: Calling election");
-                        node_wlock.unwrap().call_election();
+                        node_wlock.unwrap().call_election(&replica_urls);
                     }
                     Err(_) => (),
                 }
@@ -192,7 +190,7 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
     }
 }
 
-fn main() {
+fn read_config() -> (u64, Vec<String>) {
     let args: Vec<String> = env::args().collect();
 
     // Get Node ID from command line argument
@@ -211,7 +209,14 @@ fn main() {
         .lines()
         .map(|s| s.unwrap())
         .collect::<Vec<String>>();
-    let (node_rpc, address) = NodeRpc::new(id, nodes);
+    (id, nodes)
+}
+
+fn main() {
+    let (id, nodes) = read_config();
+    let (node_rpc, address, rx) = NodeRpc::new(id, &nodes);
+    let replicas = node_rpc.replica_urls.clone();
+    let node_clone = Arc::clone(&node_rpc.node);
 
     let mut io = jsonrpc_core::IoHandler::new();
     io.extend_with(node_rpc.to_delegate());
@@ -221,7 +226,7 @@ fn main() {
         .unwrap();
 
     println!("Node Address: {:?}", server.address());
-
+    std::thread::spawn(move || election_timer(rx, node_clone, replicas));
     server.wait();
 }
 
@@ -231,19 +236,29 @@ mod tests {
 
     #[test]
     pub fn test_election_timeout() {
-        let (tx, rx) = unbounded();
-        let mut node_rpc =
-            NodeRpc::new(vec!["binary".to_string(), "1".to_string(), "3".to_string()]);
+        let (id, nodes) = (
+            0,
+            vec![
+                "127.0.0.1:3030".to_string(),
+                "127.0.0.1:4030".to_string(),
+                "127.0.0.1:5030".to_string(),
+            ],
+        );
+        let (mut node_rpc, address, rx) = NodeRpc::new(id, &nodes);
         println!("Node Wrapper created: {:?}", node_rpc);
         let mut node_clone = Arc::clone(&node_rpc.node);
 
         std::thread::spawn(move || {
-            election_timer(rx, node_clone);
+            election_timer(
+                rx,
+                node_clone,
+                vec!["127.0.0.1:4030".to_string(), "127.0.0.1:5030".to_string()],
+            );
         });
 
         for _ in 0..10 {
             println!("Main thread: Send ping");
-            let timeout_reset = tx.send(true);
+            let timeout_reset = node_rpc.tx_election_timer.send(true);
             match timeout_reset {
                 Ok(_) => {
                     let mut rng = rand::thread_rng();
