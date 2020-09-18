@@ -5,11 +5,12 @@ set -euo pipefail
 trap 'kill 0' EXIT
 
 cargo build
-PORT=3030
+
+# Make Sure `config` has enough entries with unique IP:port - In this case 3 entries, each entry
+# of the form `IP PORT` followed by newline
 for i in {0..2}
 do
-  ./target/debug/raft "$i" 3 $PORT > $i.log 2>&1 &
-  PORT=$((PORT + 1000))
+  ./target/debug/raft "$i" > $i.log 2>&1 &
 done
 
 echo "Started workers"

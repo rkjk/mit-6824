@@ -9,8 +9,9 @@ use jsonrpc_http_server::{CloseHandle, Server, ServerBuilder};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs::File;
+use std::io::{self, BufRead};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -100,25 +101,16 @@ struct NodeRpc {
     node: Arc<RwLock<Node>>,
     tx_election_timer: Sender<bool>,
     id: u64,
-    replica_ids: Vec<u64>,
+    replica_urls: Vec<String>,
 }
 
 impl NodeRpc {
-    fn new(args: Vec<String>) -> NodeRpc {
-        println!("{:?}", args);
-        if args.len() <= 1 {
-            panic!("Node ID not supplied");
-        }
-
-        if args.len() <= 2 {
-            panic!("Number of replicas not supplied");
-        }
-        let node_id = args[1].parse::<u64>().unwrap();
-        let num_replicas = args[2].parse::<u64>().unwrap();
-        let mut other_node_ids = Vec::new();
-        for i in 0..num_replicas {
-            if i != node_id {
-                other_node_ids.push(i);
+    fn new(node_id: u64, urls: Vec<String>) -> (NodeRpc, String) {
+        let mut replica_urls = Vec::new();
+        let address = urls[node_id as usize].clone();
+        for (i, v) in urls.into_iter().enumerate() {
+            if i != node_id as usize {
+                replica_urls.push(v);
             }
         }
         // Create channel for communication between main thread and election timer thread.
@@ -128,13 +120,13 @@ impl NodeRpc {
             node: Arc::new(RwLock::new(Node::new())),
             tx_election_timer: tx,
             id: node_id,
-            replica_ids: other_node_ids,
+            replica_urls: replica_urls,
         };
 
         let node_clone = Arc::clone(&node_rpc.node);
         std::thread::spawn(move || election_timer(rx, node_clone));
 
-        return node_rpc;
+        return (node_rpc, address);
     }
 }
 
@@ -180,7 +172,7 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
         let mut rng = rand::thread_rng();
         let timeout = Duration::from_millis(rng.gen_range(150, 300));
         match rx.recv_timeout(timeout) {
-            Ok(val) => (),
+            Ok(_val) => (),
             Err(RecvTimeoutError::Timeout) => {
                 println!("Election Timeout thread: Timeout elapsed");
                 let node_wlock = node_clone.write();
@@ -202,9 +194,24 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let port = &args[3];
-    let address = "127.0.0.1:".to_string() + port;
-    let mut node_rpc = NodeRpc::new(args);
+
+    // Get Node ID from command line argument
+    let id = match args[1].parse::<u64>() {
+        Ok(val) => val,
+        Err(_) => panic!("Invalid Node Id"),
+    };
+
+    // Read the IP Address - Port pairs of all nodes from config file
+    // The Node ID gives us the IP-PORT of the current node
+    let config_file = match File::open("./config") {
+        Ok(f) => f,
+        Err(_) => panic!("Cannot find config file"),
+    };
+    let nodes: Vec<String> = io::BufReader::new(config_file)
+        .lines()
+        .map(|s| s.unwrap())
+        .collect::<Vec<String>>();
+    let (node_rpc, address) = NodeRpc::new(id, nodes);
 
     let mut io = jsonrpc_core::IoHandler::new();
     io.extend_with(node_rpc.to_delegate());
@@ -212,8 +219,9 @@ fn main() {
         .threads(1)
         .start_http(&address.parse().unwrap())
         .unwrap();
-    let close_handle = server.close_handle();
+
     println!("Node Address: {:?}", server.address());
+
     server.wait();
 }
 
