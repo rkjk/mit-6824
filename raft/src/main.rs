@@ -57,7 +57,7 @@ pub trait Rpc {
 }
 
 jsonrpc_client!(pub struct RpcClient {
-    pub fn request_vote(&mut self, payload: RequestVotePayload) -> RpcRequest<String>;
+    pub fn request_vote(&mut self, payload: Payload) -> RpcRequest<String>;
 
     pub fn append_entries(&mut self, payload: Payload) -> RpcRequest<String>;
 });
@@ -79,22 +79,17 @@ impl Node {
         println!("Increase term to {}", self.currentTerm);
         println!("Issue parallel RequestVote RPCs");
         println!("Replicas: {:?}", replica_urls);
-    }
 
-    /*
-    fn send_rpc(destination: String, rpc_type: RpcType, data: RequestVotePayload) -> Result<String> {
-        let transport = HttpTransport::new().standalone()?;
-        let transport_handle = transport.handle(destination)?;
-        let mut client = RpcClient::new(transport_handle);
-        let response = match rpc_type {
-            RpcType::RequestVote => client.request_vote(data).call()?,
-            RpcType::AppendEntries => client.append_entries(data).call()?,
-        };
-
-        let result: Payload = serde_json::from_str(&response).unwrap();
-        println!("{:?}", result);
+        for url in replica_urls {
+            let url = url.clone();
+            std::thread::spawn(
+                move || match send_rpc(url.to_string(), RpcType::RequestVote) {
+                    Ok(_) => (),
+                    Err(val) => println!("{}", val),
+                },
+            );
+        }
     }
-    */
 }
 
 #[derive(Debug)]
@@ -168,7 +163,7 @@ impl Rpc for NodeRpc {
 fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_urls: Vec<String>) {
     loop {
         let mut rng = rand::thread_rng();
-        let timeout = Duration::from_millis(rng.gen_range(150, 300)); // Should be 150-300 ms
+        let timeout = Duration::from_millis(rng.gen_range(4000, 10000)); // Should be 150-300 ms
         match rx.recv_timeout(timeout) {
             Ok(_val) => (),
             Err(RecvTimeoutError::Timeout) => {
@@ -188,6 +183,33 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_url
             }
         }
     }
+}
+
+fn send_rpc(destination: String, rpc_type: RpcType) -> Result<String> {
+    let data = 176;
+    let destination = "http://".to_string() + &destination;
+    println!("Destination: {}", destination);
+    let transport = HttpTransport::new().standalone().unwrap();
+    let transport_handle = transport.handle(&destination).unwrap();
+    let mut client = RpcClient::new(transport_handle);
+    let response = match rpc_type {
+        RpcType::RequestVote => client.request_vote(data).call(),
+        RpcType::AppendEntries => client.append_entries(data).call(),
+    };
+    let resp = match response {
+        Ok(val) => val,
+        Err(_) => {
+            return Err(error::Error {
+                code: error::ErrorCode::InternalError,
+                message: "Something went wrong when sending RPC".to_owned(),
+                data: None,
+            })
+        }
+    };
+
+    let result: std::result::Result<(), serde_json::error::Error> = serde_json::from_str(&resp);
+    println!("{:?}", result);
+    return Ok("success".to_string());
 }
 
 fn read_config() -> (u64, Vec<String>) {
