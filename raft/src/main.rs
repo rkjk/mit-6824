@@ -5,13 +5,14 @@ use jsonrpc_client_http::HttpTransport;
 use jsonrpc_core::types::error;
 use jsonrpc_core::Result;
 use jsonrpc_derive::rpc;
-use jsonrpc_http_server::{CloseHandle, Server, ServerBuilder};
+use jsonrpc_http_server::ServerBuilder;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::sync::{Arc, RwLock};
+use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -21,9 +22,13 @@ enum State {
     Leader,
 }
 
-type Payload = u64;
+#[derive(Debug, Serialize, Deserialize, Clone)]
+enum Payload {
+    RequestVote(RequestVotePayload),
+    AppendEntries(AppendEntriesPayload),
+}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestVotePayload {
     term: u64,
     candidate_id: u64,
@@ -31,63 +36,91 @@ pub struct RequestVotePayload {
     last_log_term: u64,
 }
 
-enum RpcType {
-    RequestVote,
-    AppendEntries,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppendEntriesPayload {
+    term: u64,
 }
 
 type LogType = (u64, u64);
 
 #[derive(Debug)]
 struct Node {
-    currentTerm: u64,
+    current_term: u64,
     state: State,
-    votedFor: Option<u64>,
+    voted_for: Option<u64>,
     log: Vec<LogType>,
 }
 
 #[rpc]
 pub trait Rpc {
-    /// Pop File name if available and return else signal slave to exit
+    /// Rpc Endpoints for the node
     #[rpc(name = "request_vote")]
-    fn request_vote(&self, payload: Payload) -> Result<String>;
+    fn request_vote(&self, payload: RequestVotePayload) -> Result<String>;
 
     #[rpc(name = "append_entries")]
-    fn append_entries(&self, payload: Payload) -> Result<String>;
+    fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String>;
 }
 
 jsonrpc_client!(pub struct RpcClient {
-    pub fn request_vote(&mut self, payload: Payload) -> RpcRequest<String>;
+    /// Counterparts to the endpoints on the sending side
+    pub fn request_vote(&mut self, payload: RequestVotePayload) -> RpcRequest<String>;
 
-    pub fn append_entries(&mut self, payload: Payload) -> RpcRequest<String>;
+    pub fn append_entries(&mut self, payload: AppendEntriesPayload) -> RpcRequest<String>;
 });
 
 impl Node {
     fn new() -> Self {
         Node {
-            currentTerm: 0,
+            current_term: 0,
             state: State::Follower,
-            votedFor: None,
-            log: Vec::new(),
+            voted_for: None,
+            log: vec![(0, 0)],
         }
     }
 
-    fn call_election(&mut self, replica_urls: &Vec<String>) {
+    fn call_election(&mut self, id: u64, replica_urls: &Vec<String>) {
         println!("Calling election");
         self.state = State::Candidate;
-        self.currentTerm += 1;
-        println!("Increase term to {}", self.currentTerm);
-        println!("Issue parallel RequestVote RPCs");
-        println!("Replicas: {:?}", replica_urls);
-
+        self.current_term += 1;
+        self.log.push((self.current_term, 0));
+        println!("Increase term to {}", self.current_term);
+        let mut join_handles: Vec<JoinHandle<Result<String>>> = Vec::new();
         for url in replica_urls {
+            let payload = Payload::RequestVote(RequestVotePayload {
+                term: self.current_term,
+                candidate_id: id,
+                last_log_index: self.log.len() as u64,
+                last_log_term: self.log.last().unwrap().0.clone() as u64,
+            });
             let url = url.clone();
-            std::thread::spawn(
-                move || match send_rpc(url.to_string(), RpcType::RequestVote) {
-                    Ok(_) => (),
-                    Err(val) => println!("{}", val),
-                },
+            join_handles.push(
+                Builder::new()
+                    .name(url.to_string())
+                    .spawn(move || {
+                        return send_rpc(url.to_string(), payload);
+                    })
+                    .unwrap(),
             );
+        }
+        let mut response_vec = Vec::new();
+        for t in join_handles {
+            response_vec.push(t.join().unwrap());
+        }
+        let mut num_votes = 0;
+        let total_nodes = replica_urls.len();
+        for r in response_vec.iter() {
+            match r {
+                Ok(v) => {
+                    if v == "yes" {
+                        num_votes += 1;
+                    }
+                }
+                _ => (),
+            }
+        }
+        if num_votes > (total_nodes - 1) / 2 {
+            self.state = State::Leader;
+            println!("Elected Leader!!!!!!")
         }
     }
 }
@@ -125,7 +158,7 @@ impl NodeRpc {
 
 impl Rpc for NodeRpc {
     /// RequestVote Rpcs are handled here
-    fn request_vote(&self, payload: Payload) -> Result<String> {
+    fn request_vote(&self, payload: RequestVotePayload) -> Result<String> {
         println!(
             "Node {}: Got RequestVote Rpc with payload {:?}",
             self.id, payload
@@ -145,10 +178,31 @@ impl Rpc for NodeRpc {
                 });
             }
         }
-        Ok("Got Vote".to_string())
+        let node = self.node.read().unwrap();
+
+        // If potential leader's term is less than current term, vote NO
+        if node.current_term > payload.term {
+            return Ok("no".to_string());
+        }
+        let latest_log = node.log.last().unwrap();
+
+        // If voted_for is None, or if potential leader's log is as at least as long as and as up to date as current log, vote YES
+        if node.voted_for == None
+            || (payload.last_log_term >= latest_log.0
+                && payload.last_log_index >= node.log.len() as u64)
+        {
+            // Drop Read lock
+            drop(node);
+
+            // Get write lock to the node
+            let mut node_wlock = self.node.write().unwrap();
+            node_wlock.voted_for = Some(payload.candidate_id);
+            return Ok("yes".to_string());
+        }
+        Ok("no".to_string())
     }
 
-    fn append_entries(&self, payload: Payload) -> Result<String> {
+    fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String> {
         println!(
             "Node {}: Got AppendEntries Rpc with payload {:?}",
             self.id, payload
@@ -160,7 +214,12 @@ impl Rpc for NodeRpc {
 /// Election Timer function. Accepts Receiver's side of an unbounded channel
 /// The Timer is reset everytime it receives communication from the main thread. If no communication for a period
 /// of 150-300ms (random), then election is called.
-fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_urls: Vec<String>) {
+fn election_timer(
+    rx: Receiver<bool>,
+    node_clone: Arc<RwLock<Node>>,
+    replica_urls: Vec<String>,
+    id: u64,
+) {
     loop {
         let mut rng = rand::thread_rng();
         let timeout = Duration::from_millis(rng.gen_range(4000, 10000)); // Should be 150-300 ms
@@ -172,7 +231,7 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_url
                 match node_wlock {
                     Ok(_) => {
                         println!("Election Timeout thread: Calling election");
-                        node_wlock.unwrap().call_election(&replica_urls);
+                        node_wlock.unwrap().call_election(id, &replica_urls);
                     }
                     Err(_) => (),
                 }
@@ -185,19 +244,19 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>, replica_url
     }
 }
 
-fn send_rpc(destination: String, rpc_type: RpcType) -> Result<String> {
-    let data = 176;
+fn send_rpc(destination: String, payload: Payload) -> Result<String> {
+    //let data = 176;
     let destination = "http://".to_string() + &destination;
-    println!("Destination: {}", destination);
+    //println!("Destination: {}", destination);
     let transport = HttpTransport::new().standalone().unwrap();
     let transport_handle = transport.handle(&destination).unwrap();
     let mut client = RpcClient::new(transport_handle);
-    let response = match rpc_type {
-        RpcType::RequestVote => client.request_vote(data).call(),
-        RpcType::AppendEntries => client.append_entries(data).call(),
+    let response = match payload {
+        Payload::RequestVote(data) => client.request_vote(data).call(),
+        Payload::AppendEntries(data) => client.append_entries(data).call(),
     };
     let resp = match response {
-        Ok(val) => val,
+        Ok(val) => return Ok(val),
         Err(_) => {
             return Err(error::Error {
                 code: error::ErrorCode::InternalError,
@@ -206,10 +265,19 @@ fn send_rpc(destination: String, rpc_type: RpcType) -> Result<String> {
             })
         }
     };
-
-    let result: std::result::Result<(), serde_json::error::Error> = serde_json::from_str(&resp);
-    println!("{:?}", result);
-    return Ok("success".to_string());
+    /*
+    let result: std::result::Result<String, serde_json::error::Error> = serde_json::from_str(&resp);
+    match result {
+        Ok(val) => return Ok(val),
+        Err(err) => {
+            return Err(error::Error {
+                code: error::ErrorCode::InternalError,
+                message: format!("Deserialization error: {:?}", err),
+                data: None,
+            })
+        }
+    }
+    */
 }
 
 fn read_config() -> (u64, Vec<String>) {
@@ -248,7 +316,7 @@ fn main() {
         .unwrap();
 
     println!("Node Address: {:?}", server.address());
-    std::thread::spawn(move || election_timer(rx, node_clone, replicas));
+    std::thread::spawn(move || election_timer(rx, node_clone, replicas, id));
     server.wait();
 }
 
