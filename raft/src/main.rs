@@ -15,6 +15,11 @@ use std::sync::{Arc, RwLock};
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
+static TIMER_LOW: u64 = 4000;
+static TIMER_HIGH: u64 = 10000;
+static HEARTBEAT: u64 = TIMER_LOW / 10;
+
+/// Possible states for a Node
 #[derive(Debug)]
 enum State {
     Follower,
@@ -22,12 +27,14 @@ enum State {
     Leader,
 }
 
+/// Payload for the 2 possible RPC requests
 #[derive(Debug, Serialize, Deserialize, Clone)]
 enum Payload {
     RequestVote(RequestVotePayload),
     AppendEntries(AppendEntriesPayload),
 }
 
+/// Payload for a RequestVote RPC
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestVotePayload {
     term: u64,
@@ -36,13 +43,16 @@ pub struct RequestVotePayload {
     last_log_term: u64,
 }
 
+/// Payload for an AppendEntries RPC
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppendEntriesPayload {
     term: u64,
 }
 
+/// Log Entry -> (Log Index, Value)
 type LogType = (u64, u64);
 
+/// Main Node data structure, holds all the information required for a Raft Node
 #[derive(Debug)]
 struct Node {
     current_term: u64,
@@ -53,22 +63,27 @@ struct Node {
 
 #[rpc]
 pub trait Rpc {
-    /// Rpc Endpoints for the node
+    /// Rpc Endpoints for the node. Represent the HTTP/other protocol endpoints to which RPC clients send requests
+    ///
+    /// ```
+    /// Endpoint for RequestVote RPCs
+    /// ```
     #[rpc(name = "request_vote")]
     fn request_vote(&self, payload: RequestVotePayload) -> Result<String>;
-
+    /// Endpoint for AppendEntries RPC
     #[rpc(name = "append_entries")]
     fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String>;
 }
 
 jsonrpc_client!(pub struct RpcClient {
-    /// Counterparts to the endpoints on the sending side
+    /// Counterparts to the RPC endpoints on the sending side
     pub fn request_vote(&mut self, payload: RequestVotePayload) -> RpcRequest<String>;
 
     pub fn append_entries(&mut self, payload: AppendEntriesPayload) -> RpcRequest<String>;
 });
 
 impl Node {
+    /// Return a new Node instance with the data members initialized
     fn new() -> Self {
         Node {
             current_term: 0,
@@ -78,6 +93,7 @@ impl Node {
         }
     }
 
+    /// Change state to Candidate and send RequestVote RPCs to all other nodes
     fn call_election(&mut self, id: u64, replica_urls: &Vec<String>) {
         println!("Calling election");
         self.state = State::Candidate;
@@ -106,7 +122,9 @@ impl Node {
         for t in join_handles {
             response_vec.push(t.join().unwrap());
         }
-        let mut num_votes = 0;
+
+        // Vote for self
+        let mut num_votes = 1;
         let total_nodes = replica_urls.len();
         for r in response_vec.iter() {
             match r {
@@ -120,11 +138,13 @@ impl Node {
         }
         if num_votes > (total_nodes - 1) / 2 {
             self.state = State::Leader;
-            println!("Elected Leader!!!!!!")
+            println!("Elected Leader!. Start Heartbeat thread");
         }
     }
 }
 
+/// Data structure that will accept RPCs and reset election timer using the Sender side of an unbounded crossbeam channel.\
+/// Holds an Atomic Reference Counter to the main Node data structure
 #[derive(Debug)]
 struct NodeRpc {
     node: Arc<RwLock<Node>>,
@@ -134,6 +154,7 @@ struct NodeRpc {
 }
 
 impl NodeRpc {
+    /// Return a new instance of NodeRpc appropriately initialized
     fn new(node_id: u64, urls: &Vec<String>) -> (NodeRpc, String, Receiver<bool>) {
         let mut replica_urls = Vec::new();
         let address = urls[node_id as usize].clone();
@@ -154,18 +175,13 @@ impl NodeRpc {
 
         return (node_rpc, address, rx);
     }
-}
 
-impl Rpc for NodeRpc {
-    /// RequestVote Rpcs are handled here
-    fn request_vote(&self, payload: RequestVotePayload) -> Result<String> {
-        println!(
-            "Node {}: Got RequestVote Rpc with payload {:?}",
-            self.id, payload
-        );
+    /// Reset the election timer by sending a bool over the channel
+    fn reset_timer(&self) -> Result<String> {
         match self.tx_election_timer.send(true) {
             Ok(_) => {
                 println!("Reset Election timer");
+                return Ok("Reset Election timer".to_string());
             }
             Err(_) => {
                 println!(
@@ -178,6 +194,22 @@ impl Rpc for NodeRpc {
                 });
             }
         }
+    }
+}
+
+impl Rpc for NodeRpc {
+    /// Implement the Rpc trait (RPC Endpoints declared in the trait)
+    ///
+    /// ```
+    /// Handle RequestVote Rpc requests
+    /// ```
+    fn request_vote(&self, payload: RequestVotePayload) -> Result<String> {
+        println!(
+            "Node {}: Got RequestVote Rpc with payload {:?}",
+            self.id, payload
+        );
+        self.reset_timer()?;
+
         let node = self.node.read().unwrap();
 
         // If potential leader's term is less than current term, vote NO
@@ -202,11 +234,13 @@ impl Rpc for NodeRpc {
         Ok("no".to_string())
     }
 
+    /// Handle AppendEntries RPC requests
     fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String> {
         println!(
             "Node {}: Got AppendEntries Rpc with payload {:?}",
             self.id, payload
         );
+        self.reset_timer()?;
         Ok("Got data".to_string())
     }
 }
@@ -222,7 +256,7 @@ fn election_timer(
 ) {
     loop {
         let mut rng = rand::thread_rng();
-        let timeout = Duration::from_millis(rng.gen_range(4000, 10000)); // Should be 150-300 ms
+        let timeout = Duration::from_millis(rng.gen_range(TIMER_LOW, TIMER_HIGH)); // Should be 150-300 ms
         match rx.recv_timeout(timeout) {
             Ok(_val) => (),
             Err(RecvTimeoutError::Timeout) => {
@@ -244,10 +278,10 @@ fn election_timer(
     }
 }
 
+/// Send Payload to the given destination (IP Address or URL)
+/// Depending on the type of payload, send_rpc will send either RequestVote or AppendEntries RPC
 fn send_rpc(destination: String, payload: Payload) -> Result<String> {
-    //let data = 176;
     let destination = "http://".to_string() + &destination;
-    //println!("Destination: {}", destination);
     let transport = HttpTransport::new().standalone().unwrap();
     let transport_handle = transport.handle(&destination).unwrap();
     let mut client = RpcClient::new(transport_handle);
@@ -255,7 +289,7 @@ fn send_rpc(destination: String, payload: Payload) -> Result<String> {
         Payload::RequestVote(data) => client.request_vote(data).call(),
         Payload::AppendEntries(data) => client.append_entries(data).call(),
     };
-    let resp = match response {
+    match response {
         Ok(val) => return Ok(val),
         Err(_) => {
             return Err(error::Error {
@@ -265,21 +299,9 @@ fn send_rpc(destination: String, payload: Payload) -> Result<String> {
             })
         }
     };
-    /*
-    let result: std::result::Result<String, serde_json::error::Error> = serde_json::from_str(&resp);
-    match result {
-        Ok(val) => return Ok(val),
-        Err(err) => {
-            return Err(error::Error {
-                code: error::ErrorCode::InternalError,
-                message: format!("Deserialization error: {:?}", err),
-                data: None,
-            })
-        }
-    }
-    */
 }
 
+/// Read config file in the root directory and extract ID of current node and IP Address:Port combinations of the other nodes.AppendEntriesPayload
 fn read_config() -> (u64, Vec<String>) {
     let args: Vec<String> = env::args().collect();
 
