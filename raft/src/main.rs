@@ -59,6 +59,8 @@ struct Node {
     state: State,
     voted_for: Option<u64>,
     log: Vec<LogType>,
+    id: u64,
+    replica_urls: Vec<String>,
 }
 
 #[rpc]
@@ -84,27 +86,29 @@ jsonrpc_client!(pub struct RpcClient {
 
 impl Node {
     /// Return a new Node instance with the data members initialized
-    fn new() -> Self {
+    fn new(id: u64, replica_urls: Vec<String>) -> Self {
         Node {
             current_term: 0,
             state: State::Follower,
             voted_for: None,
             log: vec![(0, 0)],
+            id: id,
+            replica_urls: replica_urls,
         }
     }
 
     /// Change state to Candidate and send RequestVote RPCs to all other nodes
-    fn call_election(&mut self, id: u64, replica_urls: &Vec<String>) {
+    fn call_election(&mut self) {
         println!("Calling election");
         self.state = State::Candidate;
         self.current_term += 1;
         self.log.push((self.current_term, 0));
         println!("Increase term to {}", self.current_term);
         let mut join_handles: Vec<JoinHandle<Result<String>>> = Vec::new();
-        for url in replica_urls {
+        for url in &self.replica_urls {
             let payload = Payload::RequestVote(RequestVotePayload {
                 term: self.current_term,
-                candidate_id: id,
+                candidate_id: self.id,
                 last_log_index: self.log.len() as u64,
                 last_log_term: self.log.last().unwrap().0.clone() as u64,
             });
@@ -125,7 +129,7 @@ impl Node {
 
         // Vote for self
         let mut num_votes = 1;
-        let total_nodes = replica_urls.len();
+        let total_nodes = self.replica_urls.len();
         for r in response_vec.iter() {
             match r {
                 Ok(v) => {
@@ -149,8 +153,6 @@ impl Node {
 struct NodeRpc {
     node: Arc<RwLock<Node>>,
     tx_election_timer: Sender<bool>,
-    id: u64,
-    replica_urls: Vec<String>,
 }
 
 impl NodeRpc {
@@ -167,10 +169,8 @@ impl NodeRpc {
         // Move rx to the election timer thread and tx to the NodeRpc Object
         let (tx, rx) = unbounded();
         let node_rpc = NodeRpc {
-            node: Arc::new(RwLock::new(Node::new())),
+            node: Arc::new(RwLock::new(Node::new(node_id, replica_urls))),
             tx_election_timer: tx,
-            id: node_id,
-            replica_urls: replica_urls,
         };
 
         return (node_rpc, address, rx);
@@ -204,10 +204,7 @@ impl Rpc for NodeRpc {
     /// Handle RequestVote Rpc requests
     /// ```
     fn request_vote(&self, payload: RequestVotePayload) -> Result<String> {
-        println!(
-            "Node {}: Got RequestVote Rpc with payload {:?}",
-            self.id, payload
-        );
+        println!("Got RequestVote Rpc with payload {:?}", payload);
         self.reset_timer()?;
 
         let node = self.node.read().unwrap();
@@ -236,10 +233,7 @@ impl Rpc for NodeRpc {
 
     /// Handle AppendEntries RPC requests
     fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String> {
-        println!(
-            "Node {}: Got AppendEntries Rpc with payload {:?}",
-            self.id, payload
-        );
+        println!("Got AppendEntries Rpc with payload {:?}", payload);
         self.reset_timer()?;
         Ok("Got data".to_string())
     }
@@ -248,12 +242,7 @@ impl Rpc for NodeRpc {
 /// Election Timer function. Accepts Receiver's side of an unbounded channel
 /// The Timer is reset everytime it receives communication from the main thread. If no communication for a period
 /// of 150-300ms (random), then election is called.
-fn election_timer(
-    rx: Receiver<bool>,
-    node_clone: Arc<RwLock<Node>>,
-    replica_urls: Vec<String>,
-    id: u64,
-) {
+fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
     loop {
         let mut rng = rand::thread_rng();
         let timeout = Duration::from_millis(rng.gen_range(TIMER_LOW, TIMER_HIGH)); // Should be 150-300 ms
@@ -265,7 +254,7 @@ fn election_timer(
                 match node_wlock {
                     Ok(_) => {
                         println!("Election Timeout thread: Calling election");
-                        node_wlock.unwrap().call_election(id, &replica_urls);
+                        node_wlock.unwrap().call_election();
                     }
                     Err(_) => (),
                 }
@@ -327,7 +316,6 @@ fn read_config() -> (u64, Vec<String>) {
 fn main() {
     let (id, nodes) = read_config();
     let (node_rpc, address, rx) = NodeRpc::new(id, &nodes);
-    let replicas = node_rpc.replica_urls.clone();
     let node_clone = Arc::clone(&node_rpc.node);
 
     let mut io = jsonrpc_core::IoHandler::new();
@@ -338,7 +326,7 @@ fn main() {
         .unwrap();
 
     println!("Node Address: {:?}", server.address());
-    std::thread::spawn(move || election_timer(rx, node_clone, replicas, id));
+    std::thread::spawn(move || election_timer(rx, node_clone));
     server.wait();
 }
 
@@ -361,11 +349,7 @@ mod tests {
         let mut node_clone = Arc::clone(&node_rpc.node);
 
         std::thread::spawn(move || {
-            election_timer(
-                rx,
-                node_clone,
-                vec!["127.0.0.1:4030".to_string(), "127.0.0.1:5030".to_string()],
-            );
+            election_timer(rx, node_clone);
         });
 
         for _ in 0..10 {
