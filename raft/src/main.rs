@@ -143,11 +143,18 @@ impl Node {
         if num_votes > (total_nodes - 1) / 2 {
             self.state = State::Leader;
             println!("Elected Leader!. Start Heartbeat thread");
+            let payload = Payload::AppendEntries(AppendEntriesPayload {
+                term: self.current_term,
+            });
+            let node_replicas = self.replica_urls.clone();
+            std::thread::spawn(move || {
+                heartbeat(node_replicas, payload);
+            });
         }
     }
 }
 
-/// Data structure that will accept RPCs and reset election timer using the Sender side of an unbounded crossbeam channel.\
+/// Data structure that will accept RPCs and reset election timer using the Sender side of an unbounded crossbeam channel.
 /// Holds an Atomic Reference Counter to the main Node data structure
 #[derive(Debug)]
 struct NodeRpc {
@@ -263,6 +270,21 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
                 println!("No communication from main thread. Exit");
                 break;
             }
+        }
+    }
+}
+
+fn heartbeat(node_replicas: Vec<String>, payload: Payload) {
+    let heartbeat_timeout = TIMER_LOW / 3;
+    loop {
+        for node in &node_replicas {
+            let payload_clone = payload.clone();
+            let node_clone = node.clone();
+            std::thread::spawn(move || match send_rpc(node_clone, payload_clone) {
+                Err(x) => println!("Heartbeat failed: {}", x),
+                _ => (),
+            });
+            std::thread::sleep_ms(heartbeat_timeout as u32);
         }
     }
 }
