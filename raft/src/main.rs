@@ -15,9 +15,9 @@ use std::sync::{Arc, RwLock};
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
-static TIMER_LOW: u64 = 4000;
-static TIMER_HIGH: u64 = 10000;
-static HEARTBEAT: u64 = TIMER_LOW / 10;
+static TIMER_LOW: u64 = 150;
+static TIMER_HIGH: u64 = 300;
+static HEARTBEAT: u32 = TIMER_LOW as u32 / 3;
 
 /// Possible states for a Node
 #[derive(Debug)]
@@ -275,7 +275,6 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
 }
 
 fn heartbeat(node_replicas: Vec<String>, payload: Payload) {
-    let heartbeat_timeout = TIMER_LOW / 3;
     loop {
         for node in &node_replicas {
             let payload_clone = payload.clone();
@@ -284,7 +283,7 @@ fn heartbeat(node_replicas: Vec<String>, payload: Payload) {
                 Err(x) => println!("Heartbeat failed: {}", x),
                 _ => (),
             });
-            std::thread::sleep_ms(heartbeat_timeout as u32);
+            std::thread::sleep_ms(HEARTBEAT);
         }
     }
 }
