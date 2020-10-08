@@ -827,6 +827,7 @@ dependencies = [
  "jsonrpc-core-client",
  "jsonrpc-derive",
  "jsonrpc-http-server",
+ "lazy_static",
  "rand 0.7.3",
  "serde",
  "serde_json",
