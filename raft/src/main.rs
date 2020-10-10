@@ -28,7 +28,7 @@ lazy_static! {
 }
 
 /// Possible states for a Node
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum State {
     Follower,
     Candidate,
@@ -107,6 +107,10 @@ impl Node {
 
     /// Change state to Candidate and send RequestVote RPCs to all other nodes
     fn call_election(&mut self) {
+        if self.state == State::Leader {
+            println!("Already elected leader");
+            return;
+        }
         println!("Calling election");
         self.state = State::Candidate;
         self.current_term += 1;
