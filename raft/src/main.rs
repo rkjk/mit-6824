@@ -12,10 +12,12 @@ use std::env;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::sync::{Arc, RwLock};
-use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
+mod node;
 mod rpcsender;
+
+use node::Node;
 
 static TIMER_LOW: u64 = 150;
 static TIMER_HIGH: u64 = 300;
@@ -54,17 +56,6 @@ pub struct AppendEntriesPayload {
 /// Log Entry -> (Log Index, Value)
 type LogType = (u64, u64);
 
-/// Main Node data structure, holds all the information required for a Raft Node
-#[derive(Debug)]
-struct Node {
-    current_term: u64,
-    state: State,
-    voted_for: Option<u64>,
-    log: Vec<LogType>,
-    id: u64,
-    replica_urls: Vec<String>,
-}
-
 #[rpc]
 pub trait Rpc {
     /// Rpc Endpoints for the node. Represent the HTTP/other protocol endpoints to which RPC clients send requests
@@ -77,83 +68,6 @@ pub trait Rpc {
     /// Endpoint for AppendEntries RPC
     #[rpc(name = "append_entries")]
     fn append_entries(&self, payload: AppendEntriesPayload) -> Result<String>;
-}
-
-impl Node {
-    /// Return a new Node instance with the data members initialized
-    fn new(id: u64, replica_urls: Vec<String>) -> Self {
-        Node {
-            current_term: 0,
-            state: State::Follower,
-            voted_for: None,
-            log: vec![(0, 0)],
-            id: id,
-            replica_urls: replica_urls,
-        }
-    }
-
-    /// Change state to Candidate and send RequestVote RPCs to all other nodes
-    fn call_election(&mut self) {
-        if self.state == State::Leader {
-            println!("Already elected leader");
-            return;
-        }
-        println!("Calling election");
-        self.state = State::Candidate;
-        self.current_term += 1;
-        self.log.push((self.current_term, 0));
-        println!("Increase term to {}", self.current_term);
-        let mut join_handles: Vec<JoinHandle<Result<String>>> = Vec::new();
-        for url in &self.replica_urls {
-            let payload = Payload::RequestVote(RequestVotePayload {
-                term: self.current_term,
-                candidate_id: self.id,
-                last_log_index: self.log.len() as u64,
-                last_log_term: self.log.last().unwrap().0.clone() as u64,
-            });
-            let url = url.clone();
-            join_handles.push(
-                Builder::new()
-                    .name(url.to_string())
-                    .spawn(move || {
-                        return rpcsender::SendRpc
-                            .lock()
-                            .unwrap()
-                            .send_rpc(url.to_string(), payload);
-                    })
-                    .unwrap(),
-            );
-        }
-        let mut response_vec = Vec::new();
-        for t in join_handles {
-            response_vec.push(t.join().unwrap());
-        }
-
-        // Vote for self
-        let mut num_votes = 1;
-        let total_nodes = self.replica_urls.len();
-        for r in response_vec.iter() {
-            match r {
-                Ok(v) => {
-                    if v == "yes" {
-                        num_votes += 1;
-                    }
-                }
-                _ => (),
-            }
-        }
-        if num_votes > (total_nodes - 1) / 2 {
-            self.state = State::Leader;
-            println!("Elected Leader!. Start Heartbeat thread");
-            let payload = Payload::AppendEntries(AppendEntriesPayload {
-                term: self.current_term,
-            });
-            let node_replicas = self.replica_urls.clone();
-            std::thread::spawn(move || {
-                heartbeat(node_replicas, payload);
-            });
-        }
-    }
 }
 
 /// Data structure that will accept RPCs and reset election timer using the Sender side of an unbounded crossbeam channel.
@@ -272,26 +186,6 @@ fn election_timer(rx: Receiver<bool>, node_clone: Arc<RwLock<Node>>) {
                 println!("No communication from main thread. Exit");
                 break;
             }
-        }
-    }
-}
-
-fn heartbeat(node_replicas: Vec<String>, payload: Payload) {
-    loop {
-        for node in &node_replicas {
-            let payload_clone = payload.clone();
-            let node_clone = node.clone();
-            std::thread::spawn(move || {
-                match rpcsender::SendRpc
-                    .lock()
-                    .unwrap()
-                    .send_rpc(node_clone, payload_clone)
-                {
-                    Err(x) => println!("Heartbeat failed: {}", x),
-                    _ => (),
-                }
-            });
-            std::thread::sleep_ms(HEARTBEAT);
         }
     }
 }
