@@ -1,5 +1,4 @@
-#[macro_use]
-use jsonrpc_client_core::{jsonrpc_client, expand_params};
+use jsonrpc_client_core::{expand_params, jsonrpc_client};
 
 use jsonrpc_core::types::error;
 use jsonrpc_core::Result;
@@ -20,7 +19,7 @@ jsonrpc_client!(pub struct RpcClient {
 
 lazy_static! {
     /// Initialize the Rpc Sender at the beginning of program execution
-    pub static ref SendRpc: Mutex<RpcSender> = Mutex::new(RpcSender {
+    pub static ref SEND_RPC: Mutex<RpcSender> = Mutex::new(RpcSender {
         receivers: HashMap::new()
     });
 }

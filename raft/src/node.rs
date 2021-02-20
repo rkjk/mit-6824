@@ -23,7 +23,7 @@ fn heartbeat(node_replicas: Vec<String>, payload: Payload) {
             let payload_clone = payload.clone();
             let node_clone = node.clone();
             std::thread::spawn(move || {
-                match rpcsender::SendRpc
+                match rpcsender::SEND_RPC
                     .lock()
                     .unwrap()
                     .send_rpc(node_clone, payload_clone)
@@ -74,7 +74,7 @@ impl Node {
                 Builder::new()
                     .name(url.to_string())
                     .spawn(move || {
-                        return rpcsender::SendRpc
+                        return rpcsender::SEND_RPC
                             .lock()
                             .unwrap()
                             .send_rpc(url.to_string(), payload);
